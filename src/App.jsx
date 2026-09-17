@@ -25,10 +25,11 @@ const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8 AM to 8 PM
 const formatHour = (h) => (h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`);
 
 export default function App() {
-  // Auth State
+  // Auth & Loading States
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // App State
   const [myProfile, setMyProfile] = useState(null);
@@ -150,10 +151,9 @@ export default function App() {
   const syncToPublicSchedule = async (eventsList) => {
     if (!user) return;
     
-    // Privacy by Design: Scrub details before they leave the private vault
     const scrubbedEvents = eventsList.map(ev => {
       if (ev.isPrivate) {
-        return { ...ev, title: 'Busy' }; // Stripping sensitive details
+        return { ...ev, title: 'Busy' };
       }
       return ev;
     });
@@ -168,21 +168,17 @@ export default function App() {
     if (!user || !selectedCell || !newEventTitle.trim()) return;
     
     const newEvent = {
-      id: `${selectedCell.day}-${selectedCell.hour}`, // one event per hour slot for simplicity
+      id: `${selectedCell.day}-${selectedCell.hour}`,
       day: selectedCell.day,
       hour: selectedCell.hour,
       title: newEventTitle.trim(),
       isPrivate: newEventIsPrivate
     };
 
-    // Filter out existing event in this slot if any
     const filteredEvents = myEvents.filter(ev => ev.id !== newEvent.id);
     const updatedEvents = [...filteredEvents, newEvent];
 
-    // 1. Save FULL details to Private Vault
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
-    
-    // 2. Trigger the Data Scrubber to update public presence
     await syncToPublicSchedule(updatedEvents);
 
     setSelectedCell(null);
@@ -193,38 +189,45 @@ export default function App() {
     if (!user) return;
     const updatedEvents = myEvents.filter(ev => ev.id !== eventId);
     
-    // 1. Update Private Vault
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
-    // 2. Update Public
     await syncToPublicSchedule(updatedEvents);
     setSelectedCell(null);
   };
 
   const handleCreateProfile = async (e) => {
     e.preventDefault();
-    if (!handleInput.trim() || !user) return;
+    if (!handleInput.trim() || !user || submitting) return;
     
-    const cleanHandle = handleInput.trim().toLowerCase();
-    
-    // Optimistically update local profile state so UI transitions immediately to consent screen
-    setMyProfile({ handle: cleanHandle });
-
-    // Save to Firebase (Profile)
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
-      handle: cleanHandle,
-      createdAt: new Date().toISOString()
-    });
+    setSubmitting(true);
+    try {
+      const cleanHandle = handleInput.trim().toLowerCase();
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
+        handle: cleanHandle,
+        createdAt: new Date().toISOString()
+      });
+      setMyProfile({ handle: cleanHandle });
+    } catch (err) {
+      console.error("Profile creation error:", err);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleConsent = async () => {
-    if (!user) return;
-    // Optimistically update local consent state so UI transitions immediately to calendar
-    setHasConsented(true);
-
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
-      consented: true,
-      timestamp: new Date().toISOString()
-    });
+    if (!user || submitting) return;
+    
+    setSubmitting(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
+        consented: true,
+        timestamp: new Date().toISOString()
+      });
+      setHasConsented(true);
+    } catch (err) {
+      console.error("Consent error:", err);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const toggleFollow = async (targetUid, handle) => {
@@ -246,14 +249,10 @@ export default function App() {
     }
 
     if (activeTab === 'sync') {
-      // Find who is busy
       let busyPeople = [];
-      
-      // Check my schedule
       const amIBusy = myEvents.some(e => e.day === day && e.hour === hour);
       if (amIBusy) busyPeople.push({ handle: 'You', title: myEvents.find(e => e.day === day && e.hour === hour).title, isPrivate: myEvents.find(e => e.day === day && e.hour === hour).isPrivate });
 
-      // Check friends
       following.forEach(friend => {
         const friendSchedule = friendSchedules[friend.uid] || [];
         const busyEvent = friendSchedule.find(e => e.day === day && e.hour === hour);
@@ -271,16 +270,21 @@ export default function App() {
     return null;
   };
 
-  // Wait until auth and initial Firestore data snapshots have finished loading to prevent any flickering or skipping
-  if (loadingAuth || !dataLoaded) {
+  // Intermediate Loading Gates (Prevents any visual flickering or jumping)
+  if (loadingAuth || !dataLoaded || submitting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+        <div className="flex flex-col items-center gap-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+          <p className="text-sm font-medium text-zinc-500">
+            {submitting ? 'Saving to secure vault...' : 'Loading Lunchabunch...'}
+          </p>
+        </div>
       </div>
     );
   }
 
-  // Step 1: Handle Creation / Welcome Screen
+  // Step 1: Handle Creation
   if (!myProfile) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
@@ -308,7 +312,7 @@ export default function App() {
     );
   }
 
-  // Step 2: Privacy & Data Consent Screen (Appears after claiming handle)
+  // Step 2: Privacy Consent
   if (!hasConsented) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
