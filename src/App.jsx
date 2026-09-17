@@ -88,8 +88,6 @@ export default function App() {
     const unsubProfile = onSnapshot(profileRef, (docSnap) => {
       if (docSnap.exists()) {
         setMyProfile(docSnap.data());
-      } else {
-        setMyProfile(null);
       }
       profileFetched = true;
       checkDataReady();
@@ -104,8 +102,6 @@ export default function App() {
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists() && docSnap.data().consented) {
         setHasConsented(true);
-      } else {
-        setHasConsented(false);
       }
       settingsFetched = true;
       checkDataReady();
@@ -198,14 +194,18 @@ export default function App() {
     e.preventDefault();
     if (!handleInput.trim() || !user || submitting) return;
     
+    const cleanHandle = handleInput.trim().toLowerCase();
+    
+    // 1. Optimistically set local state immediately to prevent any flicker or bounce back
+    setMyProfile({ handle: cleanHandle });
     setSubmitting(true);
+
     try {
-      const cleanHandle = handleInput.trim().toLowerCase();
+      // 2. Persist to Firestore in the background
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
         handle: cleanHandle,
         createdAt: new Date().toISOString()
       });
-      setMyProfile({ handle: cleanHandle });
     } catch (err) {
       console.error("Profile creation error:", err);
     } finally {
@@ -216,13 +216,16 @@ export default function App() {
   const handleConsent = async () => {
     if (!user || submitting) return;
     
+    // 1. Optimistically set local consent state immediately
+    setHasConsented(true);
     setSubmitting(true);
+
     try {
+      // 2. Persist to Firestore in the background
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
         consented: true,
         timestamp: new Date().toISOString()
       });
-      setHasConsented(true);
     } catch (err) {
       console.error("Consent error:", err);
     } finally {
@@ -270,7 +273,7 @@ export default function App() {
     return null;
   };
 
-  // Intermediate Loading Gates (Prevents any visual flickering or jumping)
+  // Loading Gate
   if (loadingAuth || !dataLoaded || submitting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50">
@@ -284,7 +287,7 @@ export default function App() {
     );
   }
 
-  // Step 1: Handle Creation
+  // Step 1: Handle Creation Screen
   if (!myProfile) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
@@ -312,7 +315,7 @@ export default function App() {
     );
   }
 
-  // Step 2: Privacy Consent
+  // Step 2: Privacy Consent Screen
   if (!hasConsented) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
@@ -614,6 +617,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 
