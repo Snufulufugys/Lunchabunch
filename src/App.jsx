@@ -249,6 +249,14 @@ export default function App() {
 
   if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-zinc-50"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
 
+  if (loadingAuth || (!myProfile && handleInput === '')) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+      </div>
+    );
+  }
+
   if (!myProfile) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
