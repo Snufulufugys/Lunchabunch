@@ -28,6 +28,7 @@ export default function App() {
   // Auth State
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+  const [dataLoaded, setDataLoaded] = useState(false);
 
   // App State
   const [myProfile, setMyProfile] = useState(null);
@@ -63,7 +64,7 @@ export default function App() {
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      setLoadingAuth(false);
+      if (!currentUser) setLoadingAuth(false);
     });
     return () => unsubscribe();
   }, []);
@@ -71,11 +72,30 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
+    let profileFetched = false;
+    let settingsFetched = false;
+
+    const checkDataReady = () => {
+      if (profileFetched && settingsFetched) {
+        setDataLoaded(true);
+        setLoadingAuth(false);
+      }
+    };
+
     // 1. Fetch My Profile (Public presence)
     const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid);
     const unsubProfile = onSnapshot(profileRef, (docSnap) => {
-      if (docSnap.exists()) setMyProfile(docSnap.data());
-      else setMyProfile(null);
+      if (docSnap.exists()) {
+        setMyProfile(docSnap.data());
+      } else {
+        setMyProfile(null);
+      }
+      profileFetched = true;
+      checkDataReady();
+    }, (err) => {
+      console.error(err);
+      profileFetched = true;
+      checkDataReady();
     });
 
     // 2. Fetch Consent Settings (Private)
@@ -83,7 +103,15 @@ export default function App() {
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists() && docSnap.data().consented) {
         setHasConsented(true);
+      } else {
+        setHasConsented(false);
       }
+      settingsFetched = true;
+      checkDataReady();
+    }, (err) => {
+      console.error(err);
+      settingsFetched = true;
+      checkDataReady();
     });
 
     // 3. Fetch My RAW Private Events (Private Vault)
@@ -178,25 +206,21 @@ export default function App() {
     
     const cleanHandle = handleInput.trim().toLowerCase();
     
-    // Instantly set local profile AND mark consent so it moves straight to the calendar/vault!
+    // Optimistically update local profile state so UI transitions immediately to consent screen
     setMyProfile({ handle: cleanHandle });
-    setHasConsented(true);
 
     // Save to Firebase (Profile)
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
       handle: cleanHandle,
       createdAt: new Date().toISOString()
     });
-
-    // Also auto-save consent to Firebase in the background
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
-      consented: true,
-      timestamp: new Date().toISOString()
-    });
   };
 
   const handleConsent = async () => {
     if (!user) return;
+    // Optimistically update local consent state so UI transitions immediately to calendar
+    setHasConsented(true);
+
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
       consented: true,
       timestamp: new Date().toISOString()
@@ -247,7 +271,8 @@ export default function App() {
     return null;
   };
 
-  if (loadingAuth) {
+  // Wait until auth and initial Firestore data snapshots have finished loading to prevent any flickering or skipping
+  if (loadingAuth || !dataLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
@@ -255,6 +280,7 @@ export default function App() {
     );
   }
 
+  // Step 1: Handle Creation / Welcome Screen
   if (!myProfile) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
@@ -282,6 +308,7 @@ export default function App() {
     );
   }
 
+  // Step 2: Privacy & Data Consent Screen (Appears after claiming handle)
   if (!hasConsented) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
@@ -583,15 +610,6 @@ export default function App() {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
 
 
 
