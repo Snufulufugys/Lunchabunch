@@ -247,9 +247,7 @@ export default function App() {
     return null;
   };
 
-  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-zinc-50"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
-
-  if (loadingAuth || (!myProfile && handleInput === '')) {
+  if (loadingAuth) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
