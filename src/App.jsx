@@ -178,13 +178,20 @@ export default function App() {
     
     const cleanHandle = handleInput.trim().toLowerCase();
     
-    // 1. Instantly update local profile state so it doesn't bounce back
+    // Instantly set local profile AND mark consent so it moves straight to the calendar/vault!
     setMyProfile({ handle: cleanHandle });
+    setHasConsented(true);
 
-    // 2. Save to Firebase
+    // Save to Firebase (Profile)
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
       handle: cleanHandle,
       createdAt: new Date().toISOString()
+    });
+
+    // Also auto-save consent to Firebase in the background
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
+      consented: true,
+      timestamp: new Date().toISOString()
     });
   };
 
