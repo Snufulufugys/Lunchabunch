@@ -176,8 +176,14 @@ export default function App() {
     e.preventDefault();
     if (!handleInput.trim() || !user) return;
     
+    const cleanHandle = handleInput.trim().toLowerCase();
+    
+    // 1. Instantly update local profile state so it doesn't bounce back
+    setMyProfile({ handle: cleanHandle });
+
+    // 2. Save to Firebase
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
-      handle: handleInput.trim().toLowerCase(),
+      handle: cleanHandle,
       createdAt: new Date().toISOString()
     });
   };
