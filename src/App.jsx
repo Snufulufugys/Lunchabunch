@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, collection, query, onSnapshot, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
-import { ShieldCheck, Lock, Unlock, Users, Calendar, Settings, Search, UserPlus, CheckCircle2, Clock, X, Info, Sparkles, Upload } from 'lucide-react';
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore, doc, collection, query, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
+import { ShieldCheck, Lock, Unlock, Users, Calendar, Search, CheckCircle2, Clock, X, Sparkles, LogOut } from 'lucide-react';
 
-// Firebase Setup (Strict Rules Applied)
+// Firebase Setup
 const firebaseConfig = {
   apiKey: "AIzaSyBs5iDBwYDWJrJqGpHu9pVPu35Rh1HD9Po",
   authDomain: "lunchabunch-eec99.firebaseapp.com",
@@ -16,67 +16,62 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
 const db = getFirestore(app);
 const appId = 'lunchabunch-production';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8 AM to 8 PM
+const HOUR_HEIGHT = 80; // pixels per hour in the calendar UI
 
 const formatHour = (h) => (h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`);
 
+// Math helpers for placing events precisely on the grid
+const calculateTop = (timeStr) => {
+  const [h, m] = timeStr.split(':').map(Number);
+  return ((h - 8) * HOUR_HEIGHT) + ((m / 60) * HOUR_HEIGHT);
+};
+
+const calculateHeight = (startStr, endStr) => {
+  const [sh, sm] = startStr.split(':').map(Number);
+  const [eh, em] = endStr.split(':').map(Number);
+  const durationMins = (eh * 60 + em) - (sh * 60 + sm);
+  return (durationMins / 60) * HOUR_HEIGHT;
+};
+
 export default function App() {
-  // Auth & Loading States
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // App State
   const [myProfile, setMyProfile] = useState(null);
   const [hasConsented, setHasConsented] = useState(false);
-  const [activeTab, setActiveTab] = useState('my-schedule'); // my-schedule, network, sync
+  const [activeTab, setActiveTab] = useState('my-schedule'); 
   
-  // Data State
-  const [myEvents, setMyEvents] = useState([]); // Private source of truth
+  const [myEvents, setMyEvents] = useState([]); 
   const [following, setFollowing] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [friendSchedules, setFriendSchedules] = useState({});
   
-  // UI State
-  const [handleInput, setHandleInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCell, setSelectedCell] = useState(null); // { day, hour }
-  const [newEventTitle, setNewEventTitle] = useState('');
-  const [newEventStart, setNewEventStart] = useState('09:15');
-  const [newEventEnd, setNewEventEnd] = useState('12:00');
-  const [newEventIsPrivate, setNewEventIsPrivate] = useState(true);
-  const [newEventRecurrence, setNewEventRecurrence] = useState('weekly');
+  const [editingEvent, setEditingEvent] = useState(null); 
+  const [handleInput, setHandleInput] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("Auth Error:", err);
-      }
-    };
-    initAuth();
-
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (!currentUser) setLoadingAuth(false);
+      if (!currentUser) {
+        setLoadingAuth(false);
+        setDataLoaded(false);
+      }
     });
     return () => unsubscribe();
   }, []);
 
   useEffect(() => {
     if (!user) return;
-
     let profileFetched = false;
     let settingsFetched = false;
 
@@ -87,53 +82,35 @@ export default function App() {
       }
     };
 
-    // 1. Fetch My Profile (Public presence)
     const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid);
     const unsubProfile = onSnapshot(profileRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setMyProfile(docSnap.data());
-      }
-      profileFetched = true;
-      checkDataReady();
-    }, (err) => {
-      console.error(err);
+      setMyProfile(docSnap.exists() ? docSnap.data() : null);
       profileFetched = true;
       checkDataReady();
     });
 
-    // 2. Fetch Consent Settings (Private)
     const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy');
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
-      if (docSnap.exists() && docSnap.data().consented) {
-        setHasConsented(true);
-      }
-      settingsFetched = true;
-      checkDataReady();
-    }, (err) => {
-      console.error(err);
+      setHasConsented(docSnap.exists() && docSnap.data().consented);
       settingsFetched = true;
       checkDataReady();
     });
 
-    // 3. Fetch My RAW Private Events (Private Vault)
     const eventsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events');
     const unsubEvents = onSnapshot(eventsRef, (docSnap) => {
       if (docSnap.exists()) setMyEvents(docSnap.data().list || []);
     });
 
-    // 4. Fetch Following List
     const followingCol = collection(db, 'artifacts', appId, 'users', user.uid, 'following');
     const unsubFollowing = onSnapshot(query(followingCol), (snap) => {
       setFollowing(snap.docs.map(d => ({ uid: d.id, ...d.data() })));
     });
 
-    // 5. Fetch ALL Public Profiles for searching (In memory filter)
     const allProfilesCol = collection(db, 'artifacts', appId, 'public', 'data', 'profiles');
     const unsubAllProfiles = onSnapshot(query(allProfilesCol), (snap) => {
       setAllProfiles(snap.docs.map(d => ({ uid: d.id, ...d.data() })));
     });
 
-    // 6. Fetch Public Schedules (Anonymized by senders)
     const publicSchedulesCol = collection(db, 'artifacts', appId, 'public', 'data', 'schedules');
     const unsubSchedules = onSnapshot(query(publicSchedulesCol), (snap) => {
       const map = {};
@@ -147,115 +124,106 @@ export default function App() {
     };
   }, [user]);
 
-  // The Data Scrubber: Converts private schedule to public anonymized format
+  const handleLogin = async () => {
+    try { await signInWithPopup(auth, googleProvider); } 
+    catch (err) { console.error("Login failed", err); }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    window.location.reload();
+  };
+
   const syncToPublicSchedule = async (eventsList) => {
     if (!user) return;
-    
-    const scrubbedEvents = eventsList.map(ev => {
-      if (ev.isPrivate) {
-        return { ...ev, title: 'Busy' };
-      }
-      return ev;
-    });
-
+    const scrubbedEvents = eventsList.map(ev => ev.isPrivate ? { ...ev, title: 'Busy' } : ev);
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'schedules', user.uid), {
-      list: scrubbedEvents,
-      updatedAt: new Date().toISOString()
+      list: scrubbedEvents, updatedAt: new Date().toISOString()
     });
   };
 
   const handleSaveEvent = async () => {
-    if (!user || !selectedCell || !newEventTitle.trim()) return;
+    if (!user || !editingEvent || !editingEvent.title.trim()) return;
     
-    const newEvent = {
-      id: `event-${Date.now()}`,
-      day: selectedCell.day,
-      startTime: newEventStart,
-      endTime: newEventEnd,
-      title: newEventTitle.trim(),
-      isPrivate: newEventIsPrivate,
-      recurrence: newEventRecurrence
+    // Ensure chronological times
+    const startNum = parseInt(editingEvent.startTime.replace(':',''));
+    const endNum = parseInt(editingEvent.endTime.replace(':',''));
+    if (startNum >= endNum) {
+      alert("End time must be after start time!");
+      return;
+    }
+
+    const isNew = !editingEvent.id;
+    const eventToSave = {
+      ...editingEvent,
+      id: isNew ? `event-${Date.now()}` : editingEvent.id,
+      title: editingEvent.title.trim()
     };
 
-    const updatedEvents = [...myEvents, newEvent];
+    const filtered = myEvents.filter(ev => ev.id !== eventToSave.id);
+    const updatedEvents = [...filtered, eventToSave];
 
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
     await syncToPublicSchedule(updatedEvents);
-
-    setSelectedCell(null);
-    setNewEventTitle('');
+    setEditingEvent(null);
   };
 
   const handleDeleteEvent = async (eventId) => {
     if (!user) return;
     const updatedEvents = myEvents.filter(ev => ev.id !== eventId);
-    
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
     await syncToPublicSchedule(updatedEvents);
-    setSelectedCell(null);
+    setEditingEvent(null);
   };
 
   const handleCreateProfile = async (e) => {
     e.preventDefault();
     if (!handleInput.trim() || !user || submitting) return;
-    
     const cleanHandle = handleInput.trim().toLowerCase();
+    
     setMyProfile({ handle: cleanHandle });
     setSubmitting(true);
-
     try {
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
-        handle: cleanHandle,
-        createdAt: new Date().toISOString()
+        handle: cleanHandle, createdAt: new Date().toISOString()
       });
-    } catch (err) {
-      console.error("Profile creation error:", err);
-    } finally {
-      setSubmitting(false);
-    }
+    } finally { setSubmitting(false); }
   };
 
   const handleConsent = async () => {
     if (!user || submitting) return;
-    
     setHasConsented(true);
     setSubmitting(true);
-
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
-        consented: true,
-        timestamp: new Date().toISOString()
+        consented: true, timestamp: new Date().toISOString()
       });
-    } catch (err) {
-      console.error("Consent error:", err);
-    } finally {
-      setSubmitting(false);
-    }
+    } finally { setSubmitting(false); }
   };
 
   const toggleFollow = async (targetUid, handle) => {
     if (!user || targetUid === user.uid) return;
     const isFollowing = following.some(f => f.uid === targetUid);
     const followRef = doc(db, 'artifacts', appId, 'users', user.uid, 'following', targetUid);
-    
-    if (isFollowing) {
-      await deleteDoc(followRef);
-    } else {
-      await setDoc(followRef, { handle });
-    }
+    if (isFollowing) await deleteDoc(followRef);
+    else await setDoc(followRef, { handle });
   };
 
-  // Check which custom-time events cover a specific hour block
-  const getEventsForSlot = (day, hour) => {
-    return myEvents.filter(ev => {
-      if (ev.day !== day) return false;
-      const [startH] = ev.startTime.split(':').map(Number);
-      const [endH] = ev.endTime.split(':').map(Number);
-      return hour >= startH && hour < endH;
+  const handleGridClick = (day, e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const clickedHour = Math.floor(y / HOUR_HEIGHT) + 8;
+    
+    setEditingEvent({
+      day,
+      startTime: `${clickedHour.toString().padStart(2, '0')}:00`,
+      endTime: `${(clickedHour + 1).toString().padStart(2, '0')}:00`,
+      title: '',
+      isPrivate: true,
+      recurrence: 'weekly'
     });
   };
 
-  // Magic Screenshot Importer Simulation (EPFL Timetable parser)
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -265,87 +233,95 @@ export default function App() {
       const parsedSampleEvents = [
         { id: `imp-1`, day: 'Monday', startTime: '10:15', endTime: '12:00', title: 'Algorithms (COM-301)', isPrivate: false, recurrence: 'weekly' },
         { id: `imp-2`, day: 'Tuesday', startTime: '13:15', endTime: '17:00', title: 'Software Engineering Project', isPrivate: true, recurrence: 'weekly' },
-        { id: `imp-3`, day: 'Wednesday', startTime: '09:15', endTime: '11:00', title: 'Quantum Physics', isPrivate: false, recurrence: 'biweekly' },
-        { id: `imp-4`, day: 'Thursday', startTime: '14:15', endTime: '18:00', title: 'Machine Learning Lab', isPrivate: true, recurrence: 'weekly' }
+        { id: `imp-3`, day: 'Wednesday', startTime: '09:15', endTime: '11:00', title: 'Quantum Physics', isPrivate: false, recurrence: 'biweekly' }
       ];
-      
       const merged = [...myEvents, ...parsedSampleEvents];
       setMyEvents(merged);
       setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: merged });
       syncToPublicSchedule(merged);
       setIsImporting(false);
-      alert("Successfully extracted classes from your schedule screenshot!");
+      alert("Successfully extracted 3 classes from your schedule screenshot!");
     }, 1500);
   };
 
-  const getCellStatus = (day, hour) => {
-    if (activeTab === 'sync') {
-      let busyPeople = [];
-      const amIBusy = getEventsForSlot(day, hour).length > 0;
-      if (amIBusy) {
-        const ev = getEventsForSlot(day, hour)[0];
-        busyPeople.push({ handle: 'You', title: ev.title, isPrivate: ev.isPrivate });
-      }
-
-      following.forEach(friend => {
-        const friendSchedule = friendSchedules[friend.uid] || [];
-        const busyEvent = friendSchedule.find(e => e.day === day && hour >= Number(e.startTime?.split(':')[0] || e.hour) && hour < Number(e.endTime?.split(':')[0] || e.hour + 1));
-        if (busyEvent) {
-          busyPeople.push({ 
-            handle: friend.handle, 
-            title: busyEvent.title, 
-            isPrivate: busyEvent.isPrivate 
-          });
-        }
-      });
-      return busyPeople;
-    }
-    return null;
+  // Helper for Heatmap Sync Radar
+  const isBusyThisHour = (events, day, targetHour) => {
+    return events.some(ev => {
+      if (ev.day !== day) return false;
+      const startH = parseInt(ev.startTime.split(':')[0]);
+      const endH = parseInt(ev.endTime.split(':')[0]);
+      const endM = parseInt(ev.endTime.split(':')[1]);
+      return startH <= targetHour && (endH > targetHour || (endH === targetHour && endM > 0));
+    });
   };
 
-  // Loading Gate
-  if (loadingAuth || !dataLoaded || submitting) {
+  const getHeatmapStatus = (day, hour) => {
+    let busyPeople = [];
+    if (isBusyThisHour(myEvents, day, hour)) {
+       const ev = myEvents.find(e => e.day === day && parseInt(e.startTime.split(':')[0]) <= hour);
+       busyPeople.push({ handle: 'You', title: ev?.title || 'Busy', isPrivate: ev?.isPrivate });
+    }
+    following.forEach(friend => {
+      const friendSchedule = friendSchedules[friend.uid] || [];
+      if (isBusyThisHour(friendSchedule, day, hour)) {
+         busyPeople.push({ handle: friend.handle, title: 'Busy', isPrivate: true });
+      }
+    });
+    return busyPeople;
+  };
+
+  // 1. Loading State
+  if (loadingAuth || (user && !dataLoaded) || submitting) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
-        <div className="flex flex-col items-center gap-3">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-          <p className="text-sm font-medium text-zinc-500">
-            {submitting ? 'Saving to secure vault...' : 'Loading Lunchabunch...'}
-          </p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 gap-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+        <p className="text-zinc-500 font-medium">Loading Lunchabunch...</p>
+      </div>
+    );
+  }
+
+  // 2. Login Screen
+  if (!user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-zinc-200 max-w-sm w-full text-center">
+          <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 text-indigo-600">
+            <Calendar size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-zinc-900 mb-2">Lunchabunch</h1>
+          <p className="text-zinc-500 mb-8">Sync schedules with your friends at EPFL instantly.</p>
+          <button onClick={handleLogin} className="w-full bg-indigo-600 text-white font-medium p-3 rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
+            Continue with Google
+          </button>
         </div>
       </div>
     );
   }
 
-  // Step 1: Handle Creation Screen
+  // 3. Handle Creation
   if (!myProfile) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
         <div className="bg-white p-8 rounded-2xl shadow-sm border border-zinc-200 max-w-md w-full">
-          <div className="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center mb-6 text-indigo-600">
-            <Users size={24} />
-          </div>
-          <h1 className="text-2xl font-bold text-zinc-900 mb-2">Welcome to Lunchabunch</h1>
-          <p className="text-zinc-500 mb-6">Choose a unique handle so your friends can find and follow your schedule.</p>
+          <h1 className="text-2xl font-bold text-zinc-900 mb-2">Pick a Handle</h1>
+          <p className="text-zinc-500 mb-6">Choose a unique username so friends can find your schedule.</p>
           <form onSubmit={handleCreateProfile} className="space-y-4">
             <input 
               type="text" 
-              placeholder="e.g. janesmith24"
+              placeholder="e.g. tristansidjanski"
               value={handleInput}
               onChange={(e) => setHandleInput(e.target.value.replace(/\s+/g, ''))}
               className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               required
             />
-            <button type="submit" className="w-full bg-indigo-600 text-white font-medium p-3 rounded-lg hover:bg-indigo-700 transition-colors">
-              Claim Handle
-            </button>
+            <button type="submit" className="w-full bg-indigo-600 text-white font-medium p-3 rounded-lg hover:bg-indigo-700">Claim Handle</button>
           </form>
         </div>
       </div>
     );
   }
 
-  // Step 2: Privacy Consent Screen
+  // 4. Privacy Consent
   if (!hasConsented) {
     return (
       <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
@@ -357,109 +333,93 @@ export default function App() {
           <div className="space-y-4 text-zinc-600 text-sm mb-8">
             <p>Before you sync, please understand how your data is handled:</p>
             <ul className="space-y-3">
-              <li className="flex items-start gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
-                <span><strong>Data Minimization:</strong> You control what details are shared. Events marked as "Private" have their titles stripped and are uploaded only as generic "Busy" time blocks.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
-                <span><strong>Access Control:</strong> Only users you explicitly approve can overlay your schedule.</span>
-              </li>
+              <li className="flex items-start gap-2"><CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" /><span><strong>Data Minimization:</strong> Private event titles are stripped and uploaded only as generic "Busy" time blocks.</span></li>
+              <li className="flex items-start gap-2"><CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" /><span><strong>Access Control:</strong> Only approved friends can overlay your schedule.</span></li>
             </ul>
           </div>
-          <button onClick={handleConsent} className="w-full bg-zinc-900 text-white font-medium p-3 rounded-lg hover:bg-zinc-800 transition-colors">
-            I Understand & Agree
-          </button>
+          <button onClick={handleConsent} className="w-full bg-zinc-900 text-white font-medium p-3 rounded-lg hover:bg-zinc-800">I Understand & Agree</button>
         </div>
       </div>
     );
   }
 
-  const filteredProfiles = allProfiles.filter(p => 
-    p.uid !== user.uid && p.handle.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col font-sans">
-      {/* Top Navigation */}
-      <header className="bg-white border-b border-zinc-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
+      <header className="bg-white border-b border-zinc-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
         <div className="flex items-center gap-2 text-indigo-600 font-bold text-xl">
           <Calendar /> Lunchabunch
         </div>
         <div className="flex bg-zinc-100 p-1 rounded-lg">
-          <button onClick={() => setActiveTab('my-schedule')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'my-schedule' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900'}`}>My Schedule</button>
-          <button onClick={() => setActiveTab('network')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'network' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900'}`}>Friends</button>
-          <button onClick={() => setActiveTab('sync')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'sync' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900'}`}>Find Free Time</button>
+          <button onClick={() => setActiveTab('my-schedule')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'my-schedule' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>My Vault</button>
+          <button onClick={() => setActiveTab('network')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'network' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>Friends</button>
+          <button onClick={() => setActiveTab('sync')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'sync' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500'}`}>Find Free Time</button>
         </div>
-        <div className="flex items-center gap-2 text-sm font-medium text-zinc-600 bg-zinc-100 px-3 py-1.5 rounded-full">
-          <div className="w-2 h-2 rounded-full bg-emerald-500"></div> @{myProfile.handle}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-sm font-medium text-zinc-600 bg-zinc-100 px-3 py-1.5 rounded-full border border-zinc-200">
+            <div className="w-2 h-2 rounded-full bg-emerald-500"></div> @{myProfile.handle}
+          </div>
+          <button onClick={handleLogout} className="text-zinc-400 hover:text-zinc-800 transition-colors" title="Logout"><LogOut size={20}/></button>
         </div>
       </header>
 
-      {/* Main Content Area */}
       <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
         
-        {/* TAB 1: My Schedule */}
+        {/* TAB 1: My Schedule (Absolute Positioned Calendar) */}
         {activeTab === 'my-schedule' && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
+            <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-bold text-zinc-900">Your Private Vault</h2>
-                <p className="text-zinc-500">Click any hour slot to add custom class times and repeats.</p>
+                <p className="text-zinc-500">Click anywhere on the grid to add a custom event.</p>
               </div>
-
-              {/* Magic EPFL Screenshot Importer */}
-              <label className="cursor-pointer bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-4 py-2.5 rounded-xl font-medium shadow-sm hover:opacity-90 transition-all flex items-center gap-2 text-sm">
+              <label className="cursor-pointer bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-4 py-2 rounded-lg font-medium shadow-sm hover:opacity-90 transition-all flex items-center gap-2 text-sm">
                 <Sparkles size={16} />
-                {isImporting ? 'Scanning Schedule...' : 'Magic Import (Screenshot)'}
+                {isImporting ? 'Scanning...' : 'Import Timetable (Screenshot)'}
                 <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" disabled={isImporting} />
               </label>
             </div>
             
-            <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden overflow-x-auto">
-              <div className="min-w-[800px]">
-                {/* Grid Header */}
-                <div className="grid grid-cols-6 border-b border-zinc-200 bg-zinc-50/50">
-                  <div className="p-4 text-center font-semibold text-zinc-400 text-sm">Time</div>
-                  {DAYS.map(day => <div key={day} className="p-4 text-center font-semibold text-zinc-700">{day}</div>)}
-                </div>
-                {/* Grid Body */}
-                {HOURS.map(hour => (
-                  <div key={hour} className="grid grid-cols-6 border-b border-zinc-100 last:border-0 hover:bg-zinc-50/30 transition-colors">
-                    <div className="p-3 text-center text-sm font-medium text-zinc-500 border-r border-zinc-100 flex items-center justify-center">
-                      {formatHour(hour)}
+            <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden flex flex-col">
+              {/* Header */}
+              <div className="flex border-b border-zinc-200 bg-zinc-50/50">
+                <div className="w-16 flex-shrink-0"></div>
+                {DAYS.map(day => <div key={day} className="flex-1 text-center py-3 font-semibold text-zinc-700 border-l border-zinc-100">{day}</div>)}
+              </div>
+              
+              {/* Grid Body */}
+              <div className="flex relative h-[800px] overflow-y-auto bg-zinc-50/30">
+                {/* Time Axis */}
+                <div className="w-16 flex-shrink-0 flex flex-col bg-white z-10 border-r border-zinc-100">
+                  {HOURS.map(h => (
+                    <div key={h} className="text-[11px] font-medium text-zinc-400 text-right pr-3 pt-2" style={{ height: `${HOUR_HEIGHT}px` }}>
+                      {formatHour(h)}
                     </div>
-                    {DAYS.map(day => {
-                      const matchingEvents = getEventsForSlot(day, hour);
+                  ))}
+                </div>
+                
+                {/* Day Columns */}
+                {DAYS.map(day => (
+                  <div key={day} className="flex-1 relative border-l border-zinc-100 first:border-l-0 cursor-pointer hover:bg-zinc-100/30 transition-colors" onClick={(e) => handleGridClick(day, e)}>
+                    {HOURS.map(h => <div key={h} className="border-b border-zinc-100 pointer-events-none" style={{ height: `${HOUR_HEIGHT}px` }}></div>)}
+                    
+                    {/* Render Events */}
+                    {myEvents.filter(ev => ev.day === day).map(ev => {
+                      const top = calculateTop(ev.startTime);
+                      const height = calculateHeight(ev.startTime, ev.endTime);
+                      
                       return (
                         <div 
-                          key={`${day}-${hour}`}
-                          onClick={() => { setSelectedCell({ day, hour }); setNewEventStart(`${hour}:00`); setNewEventEnd(`${hour + 1}:00`); }}
-                          className="p-2 border-r border-zinc-100 last:border-0 min-h-[80px] cursor-pointer hover:bg-zinc-100/50 transition-all relative flex flex-col gap-1"
+                          key={ev.id}
+                          onClick={(e) => { e.stopPropagation(); setEditingEvent(ev); }}
+                          className={`absolute left-1 right-1 rounded-md p-2 text-xs flex flex-col gap-0.5 shadow-sm overflow-hidden border cursor-pointer hover:brightness-95 transition-all ${
+                            ev.isPrivate ? 'bg-amber-100 border-amber-300 text-amber-900' : 'bg-indigo-100 border-indigo-300 text-indigo-900'
+                          }`}
+                          style={{ top: `${top}px`, height: `${height}px`, minHeight: '30px' }}
                         >
-                          {matchingEvents.map(ev => (
-                            <div 
-                              key={ev.id} 
-                              className={`p-2 rounded-md border text-xs flex flex-col gap-0.5 shadow-sm ${
-                                ev.isPrivate ? 'bg-amber-100 border-amber-200 text-amber-900' : 'bg-indigo-100 border-indigo-200 text-indigo-900'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between font-bold">
-                                <span className="flex items-center gap-1">
-                                  {ev.isPrivate ? <Lock size={10} /> : <Unlock size={10} />} {ev.title}
-                                </span>
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); handleDeleteEvent(ev.id); }} 
-                                  className="text-zinc-400 hover:text-red-600"
-                                >
-                                  <X size={12}/>
-                                </button>
-                              </div>
-                              <div className="text-[10px] opacity-75 flex items-center gap-1">
-                                <Clock size={9} /> {ev.startTime} - {ev.endTime} ({ev.recurrence})
-                              </div>
-                            </div>
-                          ))}
+                          <div className="font-bold flex items-center justify-between">
+                            <span className="flex items-center gap-1 truncate">{ev.isPrivate ? <Lock size={10} /> : <Unlock size={10} />} {ev.title}</span>
+                          </div>
+                          <div className="text-[10px] opacity-75 truncate">{ev.startTime} - {ev.endTime} ({ev.recurrence})</div>
                         </div>
                       )
                     })}
@@ -470,14 +430,13 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: Network / Friends */}
+        {/* TAB 2: Network */}
         {activeTab === 'network' && (
           <div className="space-y-6 max-w-3xl mx-auto animate-in fade-in slide-in-from-bottom-2">
              <div>
               <h2 className="text-2xl font-bold text-zinc-900">Your Network</h2>
               <p className="text-zinc-500">Find friends to sync schedules with.</p>
             </div>
-
             <div className="relative">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
               <input 
@@ -488,52 +447,37 @@ export default function App() {
                 className="w-full pl-12 pr-4 py-4 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm text-lg"
               />
             </div>
-
             <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden">
-              {filteredProfiles.length === 0 ? (
-                <div className="p-8 text-center text-zinc-500">No users found.</div>
-              ) : (
-                <ul className="divide-y divide-zinc-100">
-                  {filteredProfiles.map(profile => {
-                    const isFollowing = following.some(f => f.uid === profile.uid);
-                    return (
-                      <li key={profile.uid} className="p-4 flex items-center justify-between hover:bg-zinc-50 transition-colors">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold">
-                            {profile.handle.charAt(0).toUpperCase()}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-zinc-900">@{profile.handle}</p>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => toggleFollow(profile.uid, profile.handle)}
-                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                            isFollowing 
-                              ? 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200' 
-                              : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                          }`}
-                        >
-                          {isFollowing ? 'Following' : 'Follow'}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
+              {allProfiles.filter(p => p.uid !== user.uid && p.handle.toLowerCase().includes(searchQuery.toLowerCase())).map(profile => {
+                const isFollowing = following.some(f => f.uid === profile.uid);
+                return (
+                  <div key={profile.uid} className="p-4 flex items-center justify-between border-b border-zinc-100 last:border-0 hover:bg-zinc-50">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold">
+                        {profile.handle.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="font-semibold text-zinc-900">@{profile.handle}</span>
+                    </div>
+                    <button 
+                      onClick={() => toggleFollow(profile.uid, profile.handle)}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${isFollowing ? 'bg-zinc-100 text-zinc-700' : 'bg-indigo-600 text-white'}`}
+                    >
+                      {isFollowing ? 'Following' : 'Follow'}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* TAB 3: Sync Overlay Dashboard */}
+        {/* TAB 3: Find Free Time (Heatmap) */}
         {activeTab === 'sync' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
               <div>
-                <h2 className="text-2xl font-bold text-zinc-900 flex items-center gap-2">
-                  <Clock className="text-indigo-600" /> Availability Radar
-                </h2>
-                <p className="text-zinc-500">Overlaying your schedule with {following.length} friends. Green means everyone is free!</p>
+                <h2 className="text-2xl font-bold text-zinc-900 flex items-center gap-2"><Clock className="text-indigo-600" /> Availability Radar</h2>
+                <p className="text-zinc-500">Hourly heatmap overlaying your schedule with {following.length} friends.</p>
               </div>
               <div className="flex gap-2">
                 <div className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-emerald-100 text-emerald-800 rounded-md"><div className="w-3 h-3 bg-emerald-400 rounded-sm"></div> Free</div>
@@ -550,11 +494,9 @@ export default function App() {
                 </div>
                 {HOURS.map(hour => (
                   <div key={hour} className="grid grid-cols-6 border-b border-zinc-100 last:border-0 hover:bg-zinc-50/30 transition-colors">
-                    <div className="p-3 text-center text-sm font-medium text-zinc-500 border-r border-zinc-100 flex items-center justify-center">
-                      {formatHour(hour)}
-                    </div>
+                    <div className="p-3 text-center text-sm font-medium text-zinc-500 border-r border-zinc-100 flex items-center justify-center">{formatHour(hour)}</div>
                     {DAYS.map(day => {
-                      const busyPeople = getCellStatus(day, hour) || [];
+                      const busyPeople = getHeatmapStatus(day, hour);
                       const isFree = busyPeople.length === 0;
                       
                       let bgColor = 'bg-emerald-50/50 hover:bg-emerald-100';
@@ -565,23 +507,18 @@ export default function App() {
                       }
 
                       return (
-                        <div 
-                          key={`${day}-${hour}`}
-                          className={`p-2 border-r border-zinc-100 last:border-0 min-h-[80px] transition-all group relative cursor-help ${bgColor}`}
-                        >
+                        <div key={`${day}-${hour}`} className={`p-2 border-r border-zinc-100 last:border-0 min-h-[80px] transition-all group relative cursor-help ${bgColor}`}>
                           {!isFree && (
                             <div className={`w-full h-full border rounded-md p-1.5 ${borderColor} bg-white/40 flex flex-col gap-1 overflow-hidden`}>
                               <div className="text-xs font-bold text-zinc-700 mb-1">{busyPeople.length} Busy</div>
                               {busyPeople.map((p, idx) => (
-                                <div key={idx} className="text-[10px] leading-tight text-zinc-600 truncate flex items-center gap-1">
-                                  <span className="font-semibold">@{p.handle}</span> 
-                                </div>
+                                <div key={idx} className="text-[10px] leading-tight text-zinc-600 truncate"><span className="font-semibold">@{p.handle}</span></div>
                               ))}
                             </div>
                           )}
                           {isFree && (
                             <div className="w-full h-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                              <span className="text-xs font-bold text-emerald-600 bg-emerald-100 px-2 py-1 rounded-full">Available</span>
+                              <span className="text-[10px] font-bold text-emerald-600 bg-emerald-100 px-2 py-1 rounded-full uppercase tracking-wider">Available</span>
                             </div>
                           )}
                         </div>
@@ -595,13 +532,13 @@ export default function App() {
         )}
       </main>
 
-      {/* Upgraded Modal for Custom Times & Recurrence */}
-      {selectedCell && (
+      {/* Modal for Adding/Editing Events */}
+      {editingEvent && (
         <div className="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-5">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
-              <h3 className="font-bold text-lg text-zinc-900">Add Class / Event on {selectedCell.day}</h3>
-              <button onClick={() => setSelectedCell(null)} className="text-zinc-400 hover:text-zinc-600"><X size={20}/></button>
+              <h3 className="font-bold text-lg text-zinc-900">{editingEvent.id ? 'Edit Event' : 'New Event'} on {editingEvent.day}</h3>
+              <button onClick={() => setEditingEvent(null)} className="text-zinc-400 hover:text-zinc-600"><X size={20}/></button>
             </div>
             
             <div>
@@ -609,8 +546,8 @@ export default function App() {
               <input 
                 type="text"
                 placeholder="e.g. COM-301 Algorithms"
-                value={newEventTitle}
-                onChange={e => setNewEventTitle(e.target.value)}
+                value={editingEvent.title}
+                onChange={e => setEditingEvent({...editingEvent, title: e.target.value})}
                 className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
@@ -620,8 +557,8 @@ export default function App() {
                 <label className="block text-sm font-semibold text-zinc-700 mb-1">Start Time</label>
                 <input 
                   type="time"
-                  value={newEventStart}
-                  onChange={e => setNewEventStart(e.target.value)}
+                  value={editingEvent.startTime}
+                  onChange={e => setEditingEvent({...editingEvent, startTime: e.target.value})}
                   className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -629,8 +566,8 @@ export default function App() {
                 <label className="block text-sm font-semibold text-zinc-700 mb-1">End Time</label>
                 <input 
                   type="time"
-                  value={newEventEnd}
-                  onChange={e => setNewEventEnd(e.target.value)}
+                  value={editingEvent.endTime}
+                  onChange={e => setEditingEvent({...editingEvent, endTime: e.target.value})}
                   className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -639,8 +576,8 @@ export default function App() {
             <div>
               <label className="block text-sm font-semibold text-zinc-700 mb-1">Recurrence</label>
               <select 
-                value={newEventRecurrence}
-                onChange={e => setNewEventRecurrence(e.target.value)}
+                value={editingEvent.recurrence}
+                onChange={e => setEditingEvent({...editingEvent, recurrence: e.target.value})}
                 className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="weekly">Weekly (Every week)</option>
@@ -653,8 +590,8 @@ export default function App() {
               <input 
                 type="checkbox" 
                 id="privacy-toggle"
-                checked={newEventIsPrivate}
-                onChange={e => setNewEventIsPrivate(e.target.checked)}
+                checked={editingEvent.isPrivate}
+                onChange={e => setEditingEvent({...editingEvent, isPrivate: e.target.checked})}
                 className="w-4 h-4 mt-0.5 text-indigo-600 rounded border-zinc-300 focus:ring-indigo-500"
               />
               <label htmlFor="privacy-toggle" className="text-xs text-zinc-600 cursor-pointer">
@@ -662,19 +599,22 @@ export default function App() {
               </label>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button onClick={() => setSelectedCell(null)} className="px-4 py-2 font-medium text-zinc-600 hover:text-zinc-900">Cancel</button>
-              <button onClick={handleSaveEvent} className="px-6 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 shadow-sm">Save Event</button>
+            <div className="flex items-center justify-between pt-4 border-t border-zinc-100">
+              {editingEvent.id ? (
+                <button onClick={() => handleDeleteEvent(editingEvent.id)} className="text-red-600 font-medium text-sm hover:text-red-700">Delete</button>
+              ) : <div></div>}
+              
+              <div className="flex gap-2">
+                <button onClick={() => setEditingEvent(null)} className="px-4 py-2 font-medium text-zinc-600 hover:text-zinc-900">Cancel</button>
+                <button onClick={handleSaveEvent} className="px-6 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 shadow-sm">Save</button>
+              </div>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }
-
-
 
 
 
