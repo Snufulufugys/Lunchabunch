@@ -20,6 +20,10 @@ const googleProvider = new GoogleAuthProvider();
 const db = getFirestore(app);
 const appId = 'lunchabunch-production';
 
+// === PUT YOUR GOOGLE AI STUDIO KEY HERE ===
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+// ==========================================
+
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); 
 const HOUR_HEIGHT = 80; 
@@ -42,7 +46,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
 
   const [myProfile, setMyProfile] = useState(null);
   const [hasConsented, setHasConsented] = useState(false);
@@ -174,7 +177,6 @@ export default function App() {
 
     const updatedEvents = [...myEvents.filter(ev => ev.id !== eventToSave.id), eventToSave];
     
-    // Close modal instantly. Firebase's setDoc handles the local UI update automatically!
     setEditingEvent(null); 
 
     try {
@@ -187,7 +189,6 @@ export default function App() {
     if (!user) return;
     const updatedEvents = myEvents.filter(ev => ev.id !== eventId);
     
-    // Close modal instantly. 
     setEditingEvent(null);
 
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
@@ -210,7 +211,6 @@ export default function App() {
 
   const handleConsent = async () => {
     if (!user) return;
-    
     setHasConsented(true); 
 
     try {
@@ -243,25 +243,75 @@ export default function App() {
     });
   };
 
-  const handleFileUpload = (e) => {
+  // --------------------------------------------------------
+  // REAL AI TIMETABLE PARSER USING GEMINI VISION
+  // --------------------------------------------------------
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    if (GEMINI_API_KEY === "PASTE_YOUR_KEY_HERE") {
+      alert("Almost there! You need to paste your free Gemini API key in App.jsx first.");
+      return;
+    }
+
     setIsImporting(true);
-    
-    setTimeout(() => {
-      const parsedSampleEvents = [
-        { id: `imp-1`, day: 'Monday', startTime: '10:15', endTime: '12:00', title: 'Algorithms (COM-301)', isPrivate: false, recurrence: 'weekly' },
-        { id: `imp-2`, day: 'Tuesday', startTime: '13:15', endTime: '17:00', title: 'Software Engineering Project', isPrivate: true, recurrence: 'weekly' },
-        { id: `imp-3`, day: 'Wednesday', startTime: '09:15', endTime: '11:00', title: 'Quantum Physics', isPrivate: false, recurrence: 'biweekly' }
-      ];
-      const merged = [...myEvents, ...parsedSampleEvents];
+
+    try {
+      // 1. Convert Image to Base64
+      const base64Data = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(file);
+      });
+
+      // 2. Call the Gemini Vision API natively
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: 'Extract the schedule from this university timetable image. Return ONLY a raw JSON array (no markdown block wrapping, no explanation text) of objects with this exact structure for each class: {"day": "Monday", "startTime": "10:15", "endTime": "12:00", "title": "Course Name", "isPrivate": false, "recurrence": "weekly"}. Translate days to English explicitly (Monday, Tuesday, Wednesday, Thursday, Friday). Use 24h format for times.' },
+              { inline_data: { mime_type: file.type, data: base64Data } }
+            ]
+          }]
+        })
+      });
+
+      if (!response.ok) throw new Error("API call failed");
+
+      const data = await response.json();
+      let rawJson = data.candidates[0].content.parts[0].text;
       
-      setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: merged });
-      syncToPublicSchedule(merged);
+      // 3. Clean up the response just in case Gemini includes markdown wrappers
+      rawJson = rawJson.replace(/```json/g, '').replace(/```/g, '').trim();
+      
+      const parsedEvents = JSON.parse(rawJson);
+
+      // 4. Inject into Firestore
+      const newEvents = parsedEvents.map((ev, index) => ({
+        ...ev,
+        id: `ai-${Date.now()}-${index}`
+      }));
+
+      const merged = [...myEvents, ...newEvents];
+      
+      setMyEvents(merged);
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: merged });
+      await syncToPublicSchedule(merged);
+      
+      alert(`AI Extraction Complete! Found ${newEvents.length} classes.`);
+
+    } catch (error) {
+      console.error("AI Import Failed:", error);
+      alert("Failed to parse the timetable. Ensure the screenshot is clear and shows the days/times.");
+    } finally {
       setIsImporting(false);
-      alert("Successfully extracted 3 classes from your schedule screenshot!");
-    }, 1500);
+      e.target.value = null; // reset file input
+    }
   };
+  // --------------------------------------------------------
 
   const isBusyThisHour = (events, day, targetHour) => {
     return events.some(ev => {
@@ -288,7 +338,7 @@ export default function App() {
     return busyPeople;
   };
 
-  // 1. Core Data Gate (Only blocks during initial app load, never during transitions)
+  // 1. Core Data Gate 
   if (loadingAuth || (user && !dataLoaded)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 gap-4">
@@ -391,8 +441,8 @@ export default function App() {
                 <p className="text-zinc-500">Click anywhere on the grid to add an event. Your data is synced automatically.</p>
               </div>
               <label className="cursor-pointer bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-4 py-2 rounded-lg font-medium shadow-sm hover:opacity-90 transition-all flex items-center gap-2 text-sm">
-                <Sparkles size={16} />
-                {isImporting ? 'Scanning...' : 'Import Timetable'}
+                <Sparkles size={16} className={isImporting ? "animate-pulse" : ""} />
+                {isImporting ? 'AI is scanning...' : 'AI Import (Screenshot)'}
                 <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" disabled={isImporting} />
               </label>
             </div>
