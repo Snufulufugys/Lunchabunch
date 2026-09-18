@@ -22,11 +22,10 @@ const appId = 'lunchabunch-production';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); 
-const HOUR_HEIGHT = 80; // This controls how tall 1 hour is on the screen
+const HOUR_HEIGHT = 80; 
 
 const formatHour = (h) => (h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`);
 
-// Absolute positioning math for custom times
 const calculateTop = (timeStr) => {
   const [h, m] = timeStr.split(':').map(Number);
   return ((h - 8) * HOUR_HEIGHT) + ((m / 60) * HOUR_HEIGHT);
@@ -43,6 +42,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const [myProfile, setMyProfile] = useState(null);
   const [hasConsented, setHasConsented] = useState(false);
@@ -60,6 +60,12 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      // Auto-kick the ghost anonymous account to force Google Login
+      if (currentUser && currentUser.isAnonymous) {
+        signOut(auth);
+        return;
+      }
+      
       setUser(currentUser);
       if (!currentUser) {
         setLoadingAuth(false);
@@ -81,13 +87,12 @@ export default function App() {
       }
     };
 
-    // Firebase Listeners (Protected against reverting optimistic UI states)
     const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid);
     const unsubProfile = onSnapshot(profileRef, (docSnap) => {
       if (docSnap.exists()) {
         setMyProfile(docSnap.data());
       } else {
-        setMyProfile(prev => prev ? prev : null); // Prevent reverting to null if optimistically set
+        setMyProfile(prev => prev ? prev : null); 
       }
       profileFetched = true;
       checkDataReady();
@@ -98,7 +103,7 @@ export default function App() {
       if (docSnap.exists() && docSnap.data().consented) {
         setHasConsented(true);
       } else {
-        setHasConsented(prev => prev ? true : false); // Prevent reverting to false if optimistically set
+        setHasConsented(prev => prev ? true : false); 
       }
       settingsFetched = true;
       checkDataReady();
@@ -150,7 +155,6 @@ export default function App() {
     });
   };
 
-  // Optimistic Event Saving - Feels Instant!
   const handleSaveEvent = async () => {
     if (!user || !editingEvent || !editingEvent.title.trim()) return;
     
@@ -170,11 +174,9 @@ export default function App() {
 
     const updatedEvents = [...myEvents.filter(ev => ev.id !== eventToSave.id), eventToSave];
     
-    // Instantly update UI before Firebase saves
-    setMyEvents(updatedEvents);
-    setEditingEvent(null);
+    // Close modal instantly. Firebase's setDoc handles the local UI update automatically!
+    setEditingEvent(null); 
 
-    // Save in background
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
       await syncToPublicSchedule(updatedEvents);
@@ -185,22 +187,19 @@ export default function App() {
     if (!user) return;
     const updatedEvents = myEvents.filter(ev => ev.id !== eventId);
     
-    // Instantly update UI
-    setMyEvents(updatedEvents);
+    // Close modal instantly. 
     setEditingEvent(null);
 
-    // Sync to cloud in background
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
     await syncToPublicSchedule(updatedEvents);
   };
 
-  // Instant Transitions for Onboarding
   const handleCreateProfile = async (e) => {
     e.preventDefault();
     if (!handleInput.trim() || !user) return;
     
     const cleanHandle = handleInput.trim().toLowerCase();
-    setMyProfile({ handle: cleanHandle }); // Transitions screen instantly!
+    setMyProfile({ handle: cleanHandle }); 
 
     try {
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
@@ -212,7 +211,7 @@ export default function App() {
   const handleConsent = async () => {
     if (!user) return;
     
-    setHasConsented(true); // Transitions screen instantly!
+    setHasConsented(true); 
 
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
@@ -257,7 +256,6 @@ export default function App() {
       ];
       const merged = [...myEvents, ...parsedSampleEvents];
       
-      setMyEvents(merged);
       setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: merged });
       syncToPublicSchedule(merged);
       setIsImporting(false);
