@@ -141,11 +141,8 @@ export default function App() {
   }, [user]);
 
   const handleLogin = async () => {
-    try { 
-      await signInWithRedirect(auth, googleProvider); 
-    } catch (err) { 
-      console.error("Login failed", err); 
-    }
+    try { await signInWithRedirect(auth, googleProvider); } 
+    catch (err) { console.error("Login failed", err); }
   };
 
   const handleLogout = async () => {
