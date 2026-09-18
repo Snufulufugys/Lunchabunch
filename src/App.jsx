@@ -250,8 +250,11 @@ export default function App() {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (GEMINI_API_KEY === "PASTE_YOUR_KEY_HERE") {
-      alert("Almost there! You need to paste your free Gemini API key in App.jsx first.");
+    // Load the key securely from the environment variables
+    const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+    if (!API_KEY) {
+      alert("API Key is missing! Did you restart your Vite server after creating the .env file?");
       return;
     }
 
@@ -266,28 +269,37 @@ export default function App() {
       });
 
       // 2. Call the Gemini Vision API natively
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{
             parts: [
-              { text: 'Extract the schedule from this university timetable image. Return ONLY a raw JSON array (no markdown block wrapping, no explanation text) of objects with this exact structure for each class: {"day": "Monday", "startTime": "10:15", "endTime": "12:00", "title": "Course Name", "isPrivate": false, "recurrence": "weekly"}. Translate days to English explicitly (Monday, Tuesday, Wednesday, Thursday, Friday). Use 24h format for times.' },
+              { text: 'You are a schedule extraction tool. Analyze this timetable image. The vertical axis is time, the horizontal axis is days. For each colored block, extract the course name. The start time is usually written inside the block. You MUST infer the end time visually by looking at where the bottom edge of the colored block aligns with the horizontal hour lines on the left. Return ONLY a raw JSON array of objects. Do not use markdown. Each object must exactly match this format: {"day": "Monday", "startTime": "10:15", "endTime": "12:00", "title": "Course Name", "isPrivate": false, "recurrence": "weekly"}' },
               { inline_data: { mime_type: file.type, data: base64Data } }
             ]
           }]
         })
       });
 
-      if (!response.ok) throw new Error("API call failed");
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(`Google API Error: ${err.error?.message || response.statusText}`);
+      }
 
       const data = await response.json();
-      let rawJson = data.candidates[0].content.parts[0].text;
+      const rawText = data.candidates[0].content.parts[0].text;
       
-      // 3. Clean up the response just in case Gemini includes markdown wrappers
-      rawJson = rawJson.replace(/```json/g, '').replace(/```/g, '').trim();
+      // 3. Bulletproof JSON Extractor (Ignores AI conversational text and markdown)
+      const jsonStart = rawText.indexOf('[');
+      const jsonEnd = rawText.lastIndexOf(']');
       
-      const parsedEvents = JSON.parse(rawJson);
+      if (jsonStart === -1 || jsonEnd === -1) {
+        throw new Error("AI did not return a valid JSON array. Raw output: " + rawText);
+      }
+      
+      const cleanJson = rawText.substring(jsonStart, jsonEnd + 1);
+      const parsedEvents = JSON.parse(cleanJson);
 
       // 4. Inject into Firestore
       const newEvents = parsedEvents.map((ev, index) => ({
@@ -301,14 +313,14 @@ export default function App() {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: merged });
       await syncToPublicSchedule(merged);
       
-      alert(`AI Extraction Complete! Found ${newEvents.length} classes.`);
+      alert(`AI Extraction Complete! Successfully imported ${newEvents.length} classes.`);
 
     } catch (error) {
       console.error("AI Import Failed:", error);
-      alert("Failed to parse the timetable. Ensure the screenshot is clear and shows the days/times.");
+      alert(`Failed to import: ${error.message}`);
     } finally {
       setIsImporting(false);
-      e.target.value = null; // reset file input
+      e.target.value = null; // reset file input so you can upload the same file again if needed
     }
   };
   // --------------------------------------------------------
