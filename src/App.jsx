@@ -21,12 +21,11 @@ const db = getFirestore(app);
 const appId = 'lunchabunch-production';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8 AM to 8 PM
-const HOUR_HEIGHT = 80; // pixels per hour in the calendar UI
+const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); 
+const HOUR_HEIGHT = 80; 
 
 const formatHour = (h) => (h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`);
 
-// Math helpers for placing events precisely on the grid
 const calculateTop = (timeStr) => {
   const [h, m] = timeStr.split(':').map(Number);
   return ((h - 8) * HOUR_HEIGHT) + ((m / 60) * HOUR_HEIGHT);
@@ -82,16 +81,27 @@ export default function App() {
       }
     };
 
+    // Database Listeners synchronize with loading states to prevent bouncing
     const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid);
     const unsubProfile = onSnapshot(profileRef, (docSnap) => {
-      setMyProfile(docSnap.exists() ? docSnap.data() : null);
+      if (docSnap.exists()) {
+        setMyProfile(docSnap.data());
+        setSubmitting(false); // Unlock loader only when DB confirms
+      } else {
+        setMyProfile(null);
+      }
       profileFetched = true;
       checkDataReady();
     });
 
     const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy');
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
-      setHasConsented(docSnap.exists() && docSnap.data().consented);
+      if (docSnap.exists() && docSnap.data().consented) {
+        setHasConsented(true);
+        setSubmitting(false); // Unlock loader only when DB confirms
+      } else {
+        setHasConsented(false);
+      }
       settingsFetched = true;
       checkDataReady();
     });
@@ -145,7 +155,6 @@ export default function App() {
   const handleSaveEvent = async () => {
     if (!user || !editingEvent || !editingEvent.title.trim()) return;
     
-    // Ensure chronological times
     const startNum = parseInt(editingEvent.startTime.replace(':',''));
     const endNum = parseInt(editingEvent.endTime.replace(':',''));
     if (startNum >= endNum) {
@@ -179,26 +188,33 @@ export default function App() {
   const handleCreateProfile = async (e) => {
     e.preventDefault();
     if (!handleInput.trim() || !user || submitting) return;
-    const cleanHandle = handleInput.trim().toLowerCase();
     
-    setMyProfile({ handle: cleanHandle });
     setSubmitting(true);
     try {
+      const cleanHandle = handleInput.trim().toLowerCase();
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
         handle: cleanHandle, createdAt: new Date().toISOString()
       });
-    } finally { setSubmitting(false); }
+      // The onSnapshot listener will detect this and automatically turn off the loader.
+    } catch (err) { 
+      console.error(err);
+      setSubmitting(false); 
+    }
   };
 
   const handleConsent = async () => {
     if (!user || submitting) return;
-    setHasConsented(true);
+    
     setSubmitting(true);
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
         consented: true, timestamp: new Date().toISOString()
       });
-    } finally { setSubmitting(false); }
+      // The onSnapshot listener will detect this and automatically turn off the loader.
+    } catch (err) { 
+      console.error(err);
+      setSubmitting(false); 
+    }
   };
 
   const toggleFollow = async (targetUid, handle) => {
@@ -244,7 +260,6 @@ export default function App() {
     }, 1500);
   };
 
-  // Helper for Heatmap Sync Radar
   const isBusyThisHour = (events, day, targetHour) => {
     return events.some(ev => {
       if (ev.day !== day) return false;
@@ -275,7 +290,7 @@ export default function App() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 gap-4">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-        <p className="text-zinc-500 font-medium">Loading Lunchabunch...</p>
+        <p className="text-zinc-500 font-medium">{submitting ? 'Saving to secure vault...' : 'Loading Lunchabunch...'}</p>
       </div>
     );
   }
@@ -289,7 +304,7 @@ export default function App() {
             <Calendar size={32} />
           </div>
           <h1 className="text-2xl font-bold text-zinc-900 mb-2">Lunchabunch</h1>
-          <p className="text-zinc-500 mb-8">Sync schedules with your friends at EPFL instantly.</p>
+          <p className="text-zinc-500 mb-8">Sync schedules with your friends instantly.</p>
           <button onClick={handleLogin} className="w-full bg-indigo-600 text-white font-medium p-3 rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">
             Continue with Google
           </button>
@@ -364,7 +379,7 @@ export default function App() {
 
       <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
         
-        {/* TAB 1: My Schedule (Absolute Positioned Calendar) */}
+        {/* TAB 1: My Schedule */}
         {activeTab === 'my-schedule' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
             <div className="flex items-center justify-between">
@@ -380,15 +395,12 @@ export default function App() {
             </div>
             
             <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden flex flex-col">
-              {/* Header */}
               <div className="flex border-b border-zinc-200 bg-zinc-50/50">
                 <div className="w-16 flex-shrink-0"></div>
                 {DAYS.map(day => <div key={day} className="flex-1 text-center py-3 font-semibold text-zinc-700 border-l border-zinc-100">{day}</div>)}
               </div>
               
-              {/* Grid Body */}
               <div className="flex relative h-[800px] overflow-y-auto bg-zinc-50/30">
-                {/* Time Axis */}
                 <div className="w-16 flex-shrink-0 flex flex-col bg-white z-10 border-r border-zinc-100">
                   {HOURS.map(h => (
                     <div key={h} className="text-[11px] font-medium text-zinc-400 text-right pr-3 pt-2" style={{ height: `${HOUR_HEIGHT}px` }}>
@@ -397,12 +409,10 @@ export default function App() {
                   ))}
                 </div>
                 
-                {/* Day Columns */}
                 {DAYS.map(day => (
                   <div key={day} className="flex-1 relative border-l border-zinc-100 first:border-l-0 cursor-pointer hover:bg-zinc-100/30 transition-colors" onClick={(e) => handleGridClick(day, e)}>
                     {HOURS.map(h => <div key={h} className="border-b border-zinc-100 pointer-events-none" style={{ height: `${HOUR_HEIGHT}px` }}></div>)}
                     
-                    {/* Render Events */}
                     {myEvents.filter(ev => ev.day === day).map(ev => {
                       const top = calculateTop(ev.startTime);
                       const height = calculateHeight(ev.startTime, ev.endTime);
@@ -615,8 +625,6 @@ export default function App() {
     </div>
   );
 }
-
-
 
 // import React, { useState, useEffect } from 'react';
 // import { Calendar, Users, Clock, Search } from 'lucide-react';
