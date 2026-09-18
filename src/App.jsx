@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, signInWithRedirect, GoogleAuthProvider, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, doc, collection, query, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { ShieldCheck, Lock, Unlock, Users, Calendar, Search, CheckCircle2, Clock, X, Sparkles, LogOut } from 'lucide-react';
 
@@ -141,8 +141,11 @@ export default function App() {
   }, [user]);
 
   const handleLogin = async () => {
-    try { await signInWithPopup(auth, googleProvider); } 
-    catch (err) { console.error("Login failed", err); }
+    try { 
+      await signInWithRedirect(auth, googleProvider); 
+    } catch (err) { 
+      console.error("Login failed", err); 
+    }
   };
 
   const handleLogout = async () => {
