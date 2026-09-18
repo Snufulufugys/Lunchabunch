@@ -22,10 +22,11 @@ const appId = 'lunchabunch-production';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); 
-const HOUR_HEIGHT = 80; 
+const HOUR_HEIGHT = 80; // This controls how tall 1 hour is on the screen
 
 const formatHour = (h) => (h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`);
 
+// Absolute positioning math for custom times
 const calculateTop = (timeStr) => {
   const [h, m] = timeStr.split(':').map(Number);
   return ((h - 8) * HOUR_HEIGHT) + ((m / 60) * HOUR_HEIGHT);
@@ -42,7 +43,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
 
   const [myProfile, setMyProfile] = useState(null);
   const [hasConsented, setHasConsented] = useState(false);
@@ -81,14 +81,13 @@ export default function App() {
       }
     };
 
-    // Database Listeners synchronize with loading states to prevent bouncing
+    // Firebase Listeners (Protected against reverting optimistic UI states)
     const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid);
     const unsubProfile = onSnapshot(profileRef, (docSnap) => {
       if (docSnap.exists()) {
         setMyProfile(docSnap.data());
-        setSubmitting(false); // Unlock loader only when DB confirms
       } else {
-        setMyProfile(null);
+        setMyProfile(prev => prev ? prev : null); // Prevent reverting to null if optimistically set
       }
       profileFetched = true;
       checkDataReady();
@@ -98,9 +97,8 @@ export default function App() {
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists() && docSnap.data().consented) {
         setHasConsented(true);
-        setSubmitting(false); // Unlock loader only when DB confirms
       } else {
-        setHasConsented(false);
+        setHasConsented(prev => prev ? true : false); // Prevent reverting to false if optimistically set
       }
       settingsFetched = true;
       checkDataReady();
@@ -108,7 +106,7 @@ export default function App() {
 
     const eventsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events');
     const unsubEvents = onSnapshot(eventsRef, (docSnap) => {
-      if (docSnap.exists()) setMyEvents(docSnap.data().list || []);
+      setMyEvents(docSnap.exists() ? (docSnap.data().list || []) : []);
     });
 
     const followingCol = collection(db, 'artifacts', appId, 'users', user.uid, 'following');
@@ -152,12 +150,13 @@ export default function App() {
     });
   };
 
+  // Optimistic Event Saving - Feels Instant!
   const handleSaveEvent = async () => {
     if (!user || !editingEvent || !editingEvent.title.trim()) return;
     
-    const startNum = parseInt(editingEvent.startTime.replace(':',''));
-    const endNum = parseInt(editingEvent.endTime.replace(':',''));
-    if (startNum >= endNum) {
+    const [sH, sM] = editingEvent.startTime.split(':').map(Number);
+    const [eH, eM] = editingEvent.endTime.split(':').map(Number);
+    if (sH * 60 + sM >= eH * 60 + eM) {
       alert("End time must be after start time!");
       return;
     }
@@ -169,52 +168,57 @@ export default function App() {
       title: editingEvent.title.trim()
     };
 
-    const filtered = myEvents.filter(ev => ev.id !== eventToSave.id);
-    const updatedEvents = [...filtered, eventToSave];
-
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
-    await syncToPublicSchedule(updatedEvents);
+    const updatedEvents = [...myEvents.filter(ev => ev.id !== eventToSave.id), eventToSave];
+    
+    // Instantly update UI before Firebase saves
+    setMyEvents(updatedEvents);
     setEditingEvent(null);
+
+    // Save in background
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
+      await syncToPublicSchedule(updatedEvents);
+    } catch (err) { console.error("Error saving event", err); }
   };
 
   const handleDeleteEvent = async (eventId) => {
     if (!user) return;
     const updatedEvents = myEvents.filter(ev => ev.id !== eventId);
+    
+    // Instantly update UI
+    setMyEvents(updatedEvents);
+    setEditingEvent(null);
+
+    // Sync to cloud in background
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: updatedEvents });
     await syncToPublicSchedule(updatedEvents);
-    setEditingEvent(null);
   };
 
+  // Instant Transitions for Onboarding
   const handleCreateProfile = async (e) => {
     e.preventDefault();
-    if (!handleInput.trim() || !user || submitting) return;
+    if (!handleInput.trim() || !user) return;
     
-    setSubmitting(true);
+    const cleanHandle = handleInput.trim().toLowerCase();
+    setMyProfile({ handle: cleanHandle }); // Transitions screen instantly!
+
     try {
-      const cleanHandle = handleInput.trim().toLowerCase();
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profiles', user.uid), {
         handle: cleanHandle, createdAt: new Date().toISOString()
       });
-      // The onSnapshot listener will detect this and automatically turn off the loader.
-    } catch (err) { 
-      console.error(err);
-      setSubmitting(false); 
-    }
+    } catch (err) { console.error("Profile creation error:", err); } 
   };
 
   const handleConsent = async () => {
-    if (!user || submitting) return;
+    if (!user) return;
     
-    setSubmitting(true);
+    setHasConsented(true); // Transitions screen instantly!
+
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'privacy'), {
         consented: true, timestamp: new Date().toISOString()
       });
-      // The onSnapshot listener will detect this and automatically turn off the loader.
-    } catch (err) { 
-      console.error(err);
-      setSubmitting(false); 
-    }
+    } catch (err) { console.error("Consent error:", err); }
   };
 
   const toggleFollow = async (targetUid, handle) => {
@@ -252,6 +256,7 @@ export default function App() {
         { id: `imp-3`, day: 'Wednesday', startTime: '09:15', endTime: '11:00', title: 'Quantum Physics', isPrivate: false, recurrence: 'biweekly' }
       ];
       const merged = [...myEvents, ...parsedSampleEvents];
+      
       setMyEvents(merged);
       setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'privateData', 'events'), { list: merged });
       syncToPublicSchedule(merged);
@@ -285,12 +290,12 @@ export default function App() {
     return busyPeople;
   };
 
-  // 1. Loading State
-  if (loadingAuth || (user && !dataLoaded) || submitting) {
+  // 1. Core Data Gate (Only blocks during initial app load, never during transitions)
+  if (loadingAuth || (user && !dataLoaded)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-50 gap-4">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-        <p className="text-zinc-500 font-medium">{submitting ? 'Saving to secure vault...' : 'Loading Lunchabunch...'}</p>
+        <p className="text-zinc-500 font-medium">Loading Lunchabunch...</p>
       </div>
     );
   }
@@ -365,9 +370,9 @@ export default function App() {
           <Calendar /> Lunchabunch
         </div>
         <div className="flex bg-zinc-100 p-1 rounded-lg">
-          <button onClick={() => setActiveTab('my-schedule')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'my-schedule' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>My Vault</button>
-          <button onClick={() => setActiveTab('network')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'network' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500'}`}>Friends</button>
-          <button onClick={() => setActiveTab('sync')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'sync' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500'}`}>Find Free Time</button>
+          <button onClick={() => setActiveTab('my-schedule')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'my-schedule' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900'}`}>My Vault</button>
+          <button onClick={() => setActiveTab('network')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'network' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900'}`}>Friends</button>
+          <button onClick={() => setActiveTab('sync')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'sync' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900'}`}>Find Free Time</button>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-sm font-medium text-zinc-600 bg-zinc-100 px-3 py-1.5 rounded-full border border-zinc-200">
@@ -385,11 +390,11 @@ export default function App() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-bold text-zinc-900">Your Private Vault</h2>
-                <p className="text-zinc-500">Click anywhere on the grid to add a custom event.</p>
+                <p className="text-zinc-500">Click anywhere on the grid to add an event. Your data is synced automatically.</p>
               </div>
               <label className="cursor-pointer bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-4 py-2 rounded-lg font-medium shadow-sm hover:opacity-90 transition-all flex items-center gap-2 text-sm">
                 <Sparkles size={16} />
-                {isImporting ? 'Scanning...' : 'Import Timetable (Screenshot)'}
+                {isImporting ? 'Scanning...' : 'Import Timetable'}
                 <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" disabled={isImporting} />
               </label>
             </div>
@@ -421,7 +426,7 @@ export default function App() {
                         <div 
                           key={ev.id}
                           onClick={(e) => { e.stopPropagation(); setEditingEvent(ev); }}
-                          className={`absolute left-1 right-1 rounded-md p-2 text-xs flex flex-col gap-0.5 shadow-sm overflow-hidden border cursor-pointer hover:brightness-95 transition-all ${
+                          className={`absolute left-1 right-1 rounded-md p-2 text-xs flex flex-col gap-0.5 shadow-sm overflow-hidden border cursor-pointer hover:brightness-95 transition-all z-20 ${
                             ev.isPrivate ? 'bg-amber-100 border-amber-300 text-amber-900' : 'bg-indigo-100 border-indigo-300 text-indigo-900'
                           }`}
                           style={{ top: `${top}px`, height: `${height}px`, minHeight: '30px' }}
@@ -470,7 +475,7 @@ export default function App() {
                     </div>
                     <button 
                       onClick={() => toggleFollow(profile.uid, profile.handle)}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${isFollowing ? 'bg-zinc-100 text-zinc-700' : 'bg-indigo-600 text-white'}`}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${isFollowing ? 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
                     >
                       {isFollowing ? 'Following' : 'Follow'}
                     </button>
@@ -602,7 +607,7 @@ export default function App() {
                 id="privacy-toggle"
                 checked={editingEvent.isPrivate}
                 onChange={e => setEditingEvent({...editingEvent, isPrivate: e.target.checked})}
-                className="w-4 h-4 mt-0.5 text-indigo-600 rounded border-zinc-300 focus:ring-indigo-500"
+                className="w-4 h-4 mt-0.5 text-indigo-600 rounded border-zinc-300 focus:ring-indigo-500 cursor-pointer"
               />
               <label htmlFor="privacy-toggle" className="text-xs text-zinc-600 cursor-pointer">
                 <strong>Keep Private:</strong> Friends will only see "Busy" during these hours; course titles are stripped.
